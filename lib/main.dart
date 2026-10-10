@@ -131,12 +131,7 @@ Future<String> askAi({
   var text = doc.toString();
   if (text.length > 60000) text = text.substring(0, 60000);
 
-  final res = await http.post(
-    Uri.parse(
-      'https://generativelanguage.googleapis.com/v1beta/models/$kModel:generateContent',
-    ),
-    headers: {'x-goog-api-key': apiKey, 'content-type': 'application/json'},
-    body: jsonEncode({
+  final body = jsonEncode({
       'systemInstruction': {
         'parts': [
           {
@@ -160,24 +155,45 @@ Future<String> askAi({
         },
       ],
       'generationConfig': {'temperature': 0.2, 'maxOutputTokens': 4096},
-    }),
-  );
-  if (res.statusCode == 400 || res.statusCode == 401 || res.statusCode == 403) {
+  });
+
+  // Google sometimes says "busy" (503) or "too many requests" (429).
+  // Wait a little and try again, up to 3 times in total.
+  http.Response? res;
+  for (var attempt = 1; attempt <= 3; attempt++) {
+    res = await http
+        .post(
+          Uri.parse(
+            'https://generativelanguage.googleapis.com/v1beta/models/$kModel:generateContent',
+          ),
+          headers: {'x-goog-api-key': apiKey, 'content-type': 'application/json'},
+          body: body,
+        )
+        .timeout(const Duration(seconds: 40));
+    final busy = res.statusCode == 503 || res.statusCode == 429;
+    if (!busy || attempt == 3) break;
+    await Future.delayed(Duration(seconds: 2 * attempt));
+  }
+  final r = res!;
+  if (r.statusCode == 400 || r.statusCode == 401 || r.statusCode == 403) {
     var why = '';
     try {
-      why = (jsonDecode(res.body)['error']['message'] as String);
+      why = (jsonDecode(r.body)['error']['message'] as String);
     } catch (_) {}
     if (why.length > 160) why = why.substring(0, 160);
-    throw 'Google refused the request (${res.statusCode}). $why';
+    throw 'Google refused the request (${r.statusCode}). $why';
   }
-  if (res.statusCode == 404) {
+  if (r.statusCode == 404) {
     throw 'Model "$kModel" was not found. Change kModel in the code.';
   }
-  if (res.statusCode == 429) {
+  if (r.statusCode == 503) {
+    throw 'Google is busy right now. Try again in a minute.';
+  }
+  if (r.statusCode == 429) {
     throw 'Free limit reached. Wait a minute (or until tomorrow) and try again.';
   }
-  if (res.statusCode != 200) throw 'Server error ${res.statusCode}.';
-  final data = jsonDecode(res.body) as Map<String, dynamic>;
+  if (r.statusCode != 200) throw 'Server error ${r.statusCode}.';
+  final data = jsonDecode(r.body) as Map<String, dynamic>;
   final cands = data['candidates'] as List?;
   if (cands == null || cands.isEmpty) throw 'No answer came back.';
   final parts =
@@ -1445,11 +1461,15 @@ class _ProfileGateState extends State<ProfileGate> {
                       maxLines: 6,
                       overflow: TextOverflow.ellipsis,
                       textAlign: TextAlign.center,
-                      style: const TextStyle(color: kMuted, fontSize: 11),
+                      style: const TextStyle(
+                        color: kMuted,
+                        fontSize: 11,
+                      ),
                     ),
                     const SizedBox(height: 20),
                     FilledButton(
-                      onPressed: () => setState(() => _hasProfile = _check()),
+                      onPressed: () =>
+                          setState(() => _hasProfile = _check()),
                       child: const Text('Try again'),
                     ),
                     TextButton(
@@ -1532,9 +1552,9 @@ class _ProfileSetupPageState extends State<ProfileSetupPage> {
           })
           .timeout(const Duration(seconds: 15));
       if (!mounted) return;
-      Navigator.of(
-        context,
-      ).pushReplacement(MaterialPageRoute(builder: (_) => const UploadPage()));
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(builder: (_) => const UploadPage()),
+      );
       return;
     } catch (e) {
       if (mounted) {
@@ -1979,11 +1999,7 @@ class _ProfilePageState extends State<ProfilePage> {
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Icon(
-                    Icons.phone_rounded,
-                    color: Colors.white,
-                    size: 16,
-                  ),
+                  const Icon(Icons.phone_rounded, color: Colors.white, size: 16),
                   const SizedBox(width: 6),
                   Text(_phone, style: const TextStyle(color: Colors.white)),
                 ],
@@ -2016,7 +2032,10 @@ class _ProfilePageState extends State<ProfilePage> {
                 ),
               ),
               const SizedBox(height: 2),
-              Text(label, style: const TextStyle(color: kMuted, fontSize: 12)),
+              Text(
+                label,
+                style: const TextStyle(color: kMuted, fontSize: 12),
+              ),
             ],
           ),
         ),
@@ -2307,12 +2326,12 @@ class _UploadPageState extends State<UploadPage> {
   }
 
   void _openProfile() {
-    Navigator.of(
-      context,
-    ).push(MaterialPageRoute(builder: (_) => const ProfilePage())).then((_) {
-      _loadMe();
-      _loadRecent();
-    });
+    Navigator.of(context)
+        .push(MaterialPageRoute(builder: (_) => const ProfilePage()))
+        .then((_) {
+          _loadMe();
+          _loadRecent();
+        });
   }
 
   String get _greeting {
